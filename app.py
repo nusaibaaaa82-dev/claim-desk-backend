@@ -6,12 +6,11 @@ import sqlite3
 import time
 from contextlib import closing
 from typing import Optional
+from huggingface_hub import InferenceClient
 
-import torch
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("MODELS_CONFIG", os.path.join(BASE, "models_config.json"))
@@ -23,28 +22,23 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
 
-class HFModel:
+class HFAPIModel:
     def __init__(self, cfg):
         path = cfg["path"]
-        self.tok = AutoTokenizer.from_pretrained(path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(path).eval()
-        self.max_len = cfg.get("max_length", 256)
-        label = cfg.get("false_label", "false")
-        label2id = {k.lower(): v for k, v in self.model.config.label2id.items()}
-        if label.lower() not in label2id:
-            raise ValueError(f"{cfg['name']}: label '{label}' not in {list(label2id)}. Fix false_label in models_config.json")
-        self.false_id = label2id[label.lower()]
-        self.temperature = 1.0
-        cal = os.path.join(path, "calibration.json")
-        if os.path.exists(cal):
-            with open(cal) as f:
-                self.temperature = float(json.load(f)["temperature"])
+        self.client = InferenceClient(model=path)
+        self.false_label = cfg.get("false_label", "false").lower()
 
     def score(self, text: str) -> float:
-        enc = self.tok(text, return_tensors="pt", truncation=True, max_length=self.max_len)
-        with torch.no_grad():
-            logits = self.model(**enc).logits[0] / self.temperature
-        return torch.softmax(logits, dim=-1)[self.false_id].item()
+        try:
+            res = self.client.text_classification(text)
+            for item in res:
+                label = item['label'].lower()
+                if label == self.false_label or label == 'label_1':
+                    return float(item['score'])
+            return 0.5
+        except Exception as e:
+            print("HF API Error:", e)
+            return 0.5
 
 class PyModel:
     def __init__(self, cfg):
@@ -59,7 +53,10 @@ for cfg in CONFIG["models"]:
     if not cfg.get("enabled", True):
         continue
     kind = cfg.get("type", "hf")
-    impl = HFModel(cfg) if kind == "hf" else PyModel(cfg)
+    if kind == "hf_api":
+        impl = HFAPIModel(cfg)
+    else:
+        impl = PyModel(cfg)
     MODELS.append((cfg["name"], float(cfg["weight"]), impl))
     print(f"loaded model: {cfg['name']} ({kind})")
 
