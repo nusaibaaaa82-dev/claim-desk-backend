@@ -3,32 +3,10 @@
   "models": [
     {
       "name": "xlmr",
-      "type": "hf",
+      "type": "hf_api",
       "path": "nusaiba19/xlmr-disinfo",
       "false_label": "false",
       "weight": 0.40
-    },
-    {
-      "name": "mdeberta",
-      "type": "hf",
-      "path": "../models/mdeberta-disinfo",
-      "false_label": "false",
-      "weight": 0.20,
-      "enabled": false
-    },
-    {
-      "name": "factcheck_match",
-      "type": "python",
-      "function": "extra_models:factcheck_score",
-      "weight": 0.25,
-      "enabled": false
-    },
-    {
-      "name": "llm_judge",
-      "type": "python",
-      "function": "extra_models:llm_score",
-      "weight": 0.15,
-      "enabled": false
     }
   ]
 }
