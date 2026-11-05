@@ -7,4 +7,5 @@ pydantic>=2
 requests
 langdetect
 anthropic
-huggingface_hub
+huggingface_hub>=0.20.0
+duckduckgo-search
