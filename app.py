@@ -22,52 +22,56 @@ ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhos
 with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
-import requests
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-class HFAPIModel:
+class LocalHFModel:
     def __init__(self, cfg):
         self.model_path = cfg["path"]
-        self.hf_token = os.environ.get("HF_TOKEN", "")
         self.false_label = cfg.get("false_label", "false").lower()
+        
+        print(f"Downloading and loading model: {self.model_path}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_path)
+        self.model.eval() # মডেলকে ইনফারেন্স মোডে আনা
+        print(f"Model {self.model_path} loaded successfully!")
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
-        
-        # হাগিং ফেসের নতুন সঠিক লিঙ্ক
-        api_url = f"https://router.huggingface.co/hf-inference/models/{self.model_path}"
-        headers = {"Authorization": f"Bearer {self.hf_token}"}
-        payload = {"inputs": input_text}
-
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+            # টেক্সটকে টোকেনাইজ করা
+            inputs = self.tokenizer(input_text, return_tensors="pt", truncation=True, max_length=256)
             
-            # যদি সার্ভার লোড না হয়, তবে এরর দেখাবে
-            if response.status_code == 503:
-                print("Model is loading, retrying...")
-                time.sleep(10)
-                response = requests.post(api_url, headers=headers, json=payload, timeout=60)
-
-            response.raise_for_status()
-            res = response.json()
-            print(f"[{self.model_path}] API Response: {res}")
+            # মডেল রান করা (কোনো গ্রেডিয়েন্ট ছাড়া)
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
             
-            if isinstance(res, list):
-                false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
-                for item in res:
-                    label = item['label'].lower()
-                    if any(kw in label for kw in false_keywords):
-                        return float(item['score'])
-                
-                true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
-                for item in res:
-                    label = item['label'].lower()
-                    if any(kw in label for kw in true_keywords):
-                        return 1.0 - float(item['score'])
-                        
+            # স্কোরগুলোকে প্রোবাবিলিটিতে রূপান্তর করা (Softmax)
+            probs = torch.nn.functional.softmax(logits, dim=-1)[0]
+            
+            # মডেলের লেবেলগুলো খোঁজা
+            label2id = {k.lower(): v for k, v in self.model.config.label2id.items()}
+            
+            # মিথ্যা বা ক্ষতিকর লেবেল
+            false_keywords = ["false", "label_1", "hate", "toxic"]
+            for kw in false_keywords:
+                if kw in label2id:
+                    return float(probs[label2id[kw]])
+            
+            # সত্য বা নিরাপদ লেবেল
+            true_keywords = ["true", "label_0", "normal", "safe"]
+            for kw in true_keywords:
+                if kw in label2id:
+                    return 1.0 - float(probs[label2id[kw]])
+                    
             return 0.5
         except Exception as e:
-            print(f"HF API Error: {str(e)}")
+            print(f"Local Model Error: {str(e)}")
             return 0.5
+
+
+         
+           
 
         
 
