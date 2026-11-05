@@ -2,11 +2,18 @@
   "thresholds": { "false": 0.65, "true": 0.35 },
   "models": [
     {
-      "name": "xlmr",
+      "name": "xlmr_binary",
       "type": "hf_api",
-      "path": "nusaiba19/xlmr-disinfo",
+      "path": "nusaiba19/xlmr-xfact-binary",
       "false_label": "false",
-      "weight": 0.40
+      "weight": 0.6
+    },
+    {
+      "name": "roberta_hate",
+      "type": "hf_api",
+      "path": "nusaiba19/roberta-immigrant-hate-speech",
+      "false_label": "false",
+      "weight": 0.4
     }
   ]
 }
