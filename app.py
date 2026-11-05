@@ -256,3 +256,23 @@ def export():
             "SELECT text, lang, country, final_verdict FROM claims WHERE status IN ('confirmed','overridden')"
         ).fetchall()
         return [dict(r) for r in rows]
+
+@app.get("/test-hf")
+def test_hf():
+    import requests
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        return {"error": "HF_TOKEN is missing in Render Environment!"}
+    
+    url = "https://api-inference.huggingface.co/models/nusaiba19/xlmr-xfact-binary"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {"inputs": "The sky is green."}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        return {
+            "status_code": response.status_code,
+            "response": response.json() if response.status_code == 200 else response.text
+        }
+    except Exception as e:
+        return {"error": str(e)}
