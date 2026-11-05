@@ -23,21 +23,29 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
 
+import requests # উপরে import করা আছে কি না নিশ্চিত করুন
+
 class HFAPIModel:
     def __init__(self, cfg):
-        path = cfg["path"]
-        hf_token = os.environ.get("HF_TOKEN") 
-        self.client = InferenceClient(model=path, token=hf_token, timeout=60)
+        self.model_path = cfg["path"]
+        self.hf_token = os.environ.get("HF_TOKEN", "")
         self.false_label = cfg.get("false_label", "false").lower()
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
         
-        # মডেল জাগানোর জন্য ৩ বার চেষ্টা করবে (Retry Logic)
+        api_url = f"https://api-inference.huggingface.co/models/{self.model_path}"
+        headers = {"Authorization": f"Bearer {self.hf_token}"}
+        payload = {"inputs": input_text}
+
         for attempt in range(3):
             try:
-                res = self.client.text_classification(input_text)
-                print(f"[{self.client.model}] API Response: {res}")
+                # সরাসরি requests দিয়ে কল করা হচ্ছে
+                response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status() # ৪০৪ বা ৫০৩ হলে সরাসরি এরর দেবে
+                
+                res = response.json()
+                print(f"[{self.model_path}] API Response: {res}")
                 
                 # ১. মিথ্যা বা ক্ষতিকর লেবেল খোঁজা
                 false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
@@ -53,9 +61,15 @@ class HFAPIModel:
                     if any(kw in label for kw in true_keywords):
                         return 1.0 - float(item['score'])
                         
-                # ৩. যদি লেবেল না মেলে
-                print(f"Unmatched labels for {self.client.model}: {res}")
                 return 0.5
+                
+            except Exception as e:
+                # এবার আসল এররটি স্পষ্ট দেখা যাবে
+                print(f"HF API Error (Attempt {attempt+1}) Type: {type(e).__name__}, Message: {str(e)}")
+                if attempt < 2:
+                    time.sleep(10)
+                else:
+                    return 0.5
                 
             except Exception as e:
                 # এরর মেসেজটি লগে প্রিন্ট করবে
