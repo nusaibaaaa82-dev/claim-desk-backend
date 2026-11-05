@@ -32,26 +32,38 @@ class HFAPIModel:
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
-        try:
-            res = self.client.text_classification(input_text)
-            print(f"[{self.client.model}] API Response: {res}")
-            
-            false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam"]
-            for item in res:
-                label = item['label'].lower()
-                if any(kw in label for kw in false_keywords):
-                    return float(item['score'])
-            
-            true_keywords = ["true", "real", "label_0", "normal", "safe"]
-            for item in res:
-                label = item['label'].lower()
-                if any(kw in label for kw in true_keywords):
-                    return 1.0 - float(item['score'])
-                    
-            return 0.5
-        except Exception as e:
-            print(f"HF API Error: {str(e)}")
-            return 0.5
+        
+        # মডেল জাগানোর জন্য ৩ বার চেষ্টা করবে (Retry Logic)
+        for attempt in range(3):
+            try:
+                res = self.client.text_classification(input_text)
+                print(f"[{self.client.model}] API Response: {res}")
+                
+                # ১. মিথ্যা বা ক্ষতিকর লেবেল খোঁজা
+                false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
+                for item in res:
+                    label = item['label'].lower()
+                    if any(kw in label for kw in false_keywords):
+                        return float(item['score'])
+                
+                # ২. সত্য বা নিরাপদ লেবেল খোঁজা
+                true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
+                for item in res:
+                    label = item['label'].lower()
+                    if any(kw in label for kw in true_keywords):
+                        return 1.0 - float(item['score'])
+                        
+                # ৩. যদি লেবেল না মেলে
+                print(f"Unmatched labels for {self.client.model}: {res}")
+                return 0.5
+                
+            except Exception as e:
+                # এরর মেসেজটি লগে প্রিন্ট করবে
+                print(f"HF API Error (Attempt {attempt+1}): {str(e)}")
+                if attempt < 2:
+                    time.sleep(15) # ১৫ সেকেন্ড অপেক্ষা করে আবার চেষ্টা করবে
+                else:
+                    return 0.5
 
 class PyModel:
     def __init__(self, cfg):
