@@ -28,33 +28,56 @@ class HFAPIModel:
         self.client = InferenceClient(model=path)
         self.false_label = cfg.get("false_label", "false").lower()
 
-        def score(self, text: str, evidence: str = "") -> float:
+class HFAPIModel:
+    def __init__(self, cfg):
+        path = cfg["path"]
+        hf_token = os.environ.get("HF_TOKEN")  # Render থেকে টোকেন নিচ্ছে
+        self.client = InferenceClient(model=path, token=hf_token, timeout=60)
+        self.false_label = cfg.get("false_label", "false").lower()
+
+    def score(self, text: str, evidence: str = "") -> float:
+        input_text = f"{text}. Context: {evidence}" if evidence else text
         try:
-            # সার্চের এভিডেন্স থাকলে সেটিও মডেলকে দেখানো হবে
-            input_text = f"{text}. Context: {evidence}" if evidence else text
-            res = self.client.text_classification(input_text)
+            # মডেল জাগানোর জন্য ৩ বার চেষ্টা করবে
+            for attempt in range(3):
+                try:
+                    res = self.client.text_classification(input_text)
+                    break
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    # যদি সার্ভার ঘুমিয়ে থাকে বা ৫০৩ এরর দেয়
+                    if "503" in error_msg or "loading" in error_msg or "timeout" in error_msg:
+                        if attempt == 2:
+                            raise e
+                        print(f"Model is loading, retrying in 10s... (Attempt {attempt+1})")
+                        time.sleep(10)
+                    else:
+                        raise e
+                        
+            # ডিবাগ করার জন্য লগে রেসপন্স দেখাবে
+            print(f"[{self.client.model}] API Response: {res}")
             
-            # ডিবাগ করার জন্য লগে দেখাবে মডেল কী রেসপন্স দিচ্ছে
-            print(f"[{self.client.model}] API Response: {res}") 
-            
-            # ১. আমরা 'false', 'hate', 'fake', 'label_1' ইত্যাদি লেবেল খুঁজবো (মিথ্যা বোঝানোর জন্য)
+            # ১. মিথ্যা বা ক্ষতিকর লেবেল খোঁজা
             false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam"]
             for item in res:
                 label = item['label'].lower()
                 if any(kw in label for kw in false_keywords):
                     return float(item['score'])
             
-            # ২. যদি শুধু 'true' বা 'normal' লেবেল পাই, তবে তার স্কোর ১ থেকে বিয়োগ করবো
+            # ২. সত্য বা নিরাপদ লেবেল খোঁজা
             true_keywords = ["true", "real", "label_0", "normal", "safe"]
             for item in res:
                 label = item['label'].lower()
                 if any(kw in label for kw in true_keywords):
                     return 1.0 - float(item['score'])
                     
-            return 0.5 # কোনো লেবেল না মিললে ডিফল্ট ৫০%
-        except Exception as e:
-            print("HF API Error:", e)
             return 0.5
+            
+        except Exception as e:
+            # বিস্তারিত এরর লগে দেখাবে
+            print(f"HF API Error Type: {type(e).__name__}, Message: {str(e)}")
+            return 0.5
+           
 class PyModel:
     def __init__(self, cfg):
         mod, fn = cfg["function"].split(":")
