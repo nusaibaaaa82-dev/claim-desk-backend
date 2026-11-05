@@ -7,6 +7,7 @@ import time
 from contextlib import closing
 from typing import Optional
 from huggingface_hub import InferenceClient
+from duckduckgo_search import DDGS
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,46 +26,22 @@ THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
 class HFAPIModel:
     def __init__(self, cfg):
         path = cfg["path"]
-        self.client = InferenceClient(model=path)
-        self.false_label = cfg.get("false_label", "false").lower()
-
-class HFAPIModel:
-    def __init__(self, cfg):
-        path = cfg["path"]
-        hf_token = os.environ.get("HF_TOKEN")  # Render থেকে টোকেন নিচ্ছে
+        hf_token = os.environ.get("HF_TOKEN") 
         self.client = InferenceClient(model=path, token=hf_token, timeout=60)
         self.false_label = cfg.get("false_label", "false").lower()
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
         try:
-            # মডেল জাগানোর জন্য ৩ বার চেষ্টা করবে
-            for attempt in range(3):
-                try:
-                    res = self.client.text_classification(input_text)
-                    break
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    # যদি সার্ভার ঘুমিয়ে থাকে বা ৫০৩ এরর দেয়
-                    if "503" in error_msg or "loading" in error_msg or "timeout" in error_msg:
-                        if attempt == 2:
-                            raise e
-                        print(f"Model is loading, retrying in 10s... (Attempt {attempt+1})")
-                        time.sleep(10)
-                    else:
-                        raise e
-                        
-            # ডিবাগ করার জন্য লগে রেসপন্স দেখাবে
+            res = self.client.text_classification(input_text)
             print(f"[{self.client.model}] API Response: {res}")
             
-            # ১. মিথ্যা বা ক্ষতিকর লেবেল খোঁজা
             false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam"]
             for item in res:
                 label = item['label'].lower()
                 if any(kw in label for kw in false_keywords):
                     return float(item['score'])
             
-            # ২. সত্য বা নিরাপদ লেবেল খোঁজা
             true_keywords = ["true", "real", "label_0", "normal", "safe"]
             for item in res:
                 label = item['label'].lower()
@@ -72,18 +49,16 @@ class HFAPIModel:
                     return 1.0 - float(item['score'])
                     
             return 0.5
-            
         except Exception as e:
-            # বিস্তারিত এরর লগে দেখাবে
-            print(f"HF API Error Type: {type(e).__name__}, Message: {str(e)}")
+            print(f"HF API Error: {str(e)}")
             return 0.5
-           
+
 class PyModel:
     def __init__(self, cfg):
         mod, fn = cfg["function"].split(":")
         self.fn = getattr(importlib.import_module(mod), fn)
 
-    def score(self, text: str) -> float:
+    def score(self, text: str, evidence: str = "") -> float:
         return float(self.fn(text))
 
 MODELS = []
@@ -123,7 +98,7 @@ with closing(db()) as c:
         id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, country TEXT, lang TEXT,
         scores TEXT, failed TEXT, p_false REAL, spread REAL, verdict TEXT,
         status TEXT DEFAULT 'pending', final_verdict TEXT, note TEXT DEFAULT '',
-        video TEXT DEFAULT '', created_at REAL, reviewed_at REAL)"""
+        video TEXT DEFAULT '', web_context TEXT DEFAULT '', created_at REAL, reviewed_at REAL)"""
     )
     c.commit()
 
@@ -164,22 +139,34 @@ def check(body: CheckIn):
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "Empty claim")
+    
+    web_context = ""
+    try:
+        results = list(DDGS().text(text, max_results=3))
+        snippets = [r.get("body", "") for r in results]
+        web_context = " | ".join(snippets)[:800] 
+    except Exception as e:
+        print("Web search failed:", e)
+
     scores, failed = {}, []
     for name, _, model in MODELS:
         try:
-            scores[name] = max(0.0, min(1.0, model.score(text)))
+            scores[name] = max(0.0, min(1.0, model.score(text, evidence=web_context)))
         except Exception as e:
             failed.append({"model": name, "error": str(e)[:200]})
+    
     if not scores:
         raise HTTPException(503, "All models failed")
+    
     wsum = sum(w for n, w, _ in MODELS if n in scores)
     p_false = sum(scores[n] * w for n, w, _ in MODELS if n in scores) / wsum
     spread = max(scores.values()) - min(scores.values())
+    
     with closing(db()) as c:
         cur = c.execute(
-            "INSERT INTO claims (text,country,lang,scores,failed,p_false,spread,verdict,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO claims (text,country,lang,scores,failed,p_false,spread,verdict,web_context,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (text, body.country, detect_lang(text), json.dumps(scores), json.dumps(failed),
-             p_false, spread, verdict_for(p_false), time.time()),
+             p_false, spread, verdict_for(p_false), web_context, time.time()),
         )
         c.commit()
         return row(c.execute("SELECT * FROM claims WHERE id=?", (cur.lastrowid,)).fetchone())
