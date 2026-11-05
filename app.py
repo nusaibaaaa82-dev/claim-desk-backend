@@ -28,18 +28,33 @@ class HFAPIModel:
         self.client = InferenceClient(model=path)
         self.false_label = cfg.get("false_label", "false").lower()
 
-    def score(self, text: str) -> float:
+        def score(self, text: str, evidence: str = "") -> float:
         try:
-            res = self.client.text_classification(text)
+            # সার্চের এভিডেন্স থাকলে সেটিও মডেলকে দেখানো হবে
+            input_text = f"{text}. Context: {evidence}" if evidence else text
+            res = self.client.text_classification(input_text)
+            
+            # ডিবাগ করার জন্য লগে দেখাবে মডেল কী রেসপন্স দিচ্ছে
+            print(f"[{self.client.model}] API Response: {res}") 
+            
+            # ১. আমরা 'false', 'hate', 'fake', 'label_1' ইত্যাদি লেবেল খুঁজবো (মিথ্যা বোঝানোর জন্য)
+            false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam"]
             for item in res:
                 label = item['label'].lower()
-                if label == self.false_label or label == 'label_1':
+                if any(kw in label for kw in false_keywords):
                     return float(item['score'])
-            return 0.5
+            
+            # ২. যদি শুধু 'true' বা 'normal' লেবেল পাই, তবে তার স্কোর ১ থেকে বিয়োগ করবো
+            true_keywords = ["true", "real", "label_0", "normal", "safe"]
+            for item in res:
+                label = item['label'].lower()
+                if any(kw in label for kw in true_keywords):
+                    return 1.0 - float(item['score'])
+                    
+            return 0.5 # কোনো লেবেল না মিললে ডিফল্ট ৫০%
         except Exception as e:
             print("HF API Error:", e)
             return 0.5
-
 class PyModel:
     def __init__(self, cfg):
         mod, fn = cfg["function"].split(":")
