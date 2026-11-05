@@ -6,7 +6,9 @@ import sqlite3
 import time
 from contextlib import closing
 from typing import Optional
-from huggingface_hub import InferenceClient
+
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from duckduckgo_search import DDGS
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -22,8 +24,6 @@ ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhos
 with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 class LocalHFModel:
     def __init__(self, cfg):
@@ -33,33 +33,25 @@ class LocalHFModel:
         print(f"Downloading and loading model: {self.model_path}...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_path)
-        self.model.eval() # মডেলকে ইনফারেন্স মোডে আনা
+        self.model.eval()
         print(f"Model {self.model_path} loaded successfully!")
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
         try:
-            # টেক্সটকে টোকেনাইজ করা
             inputs = self.tokenizer(input_text, return_tensors="pt", truncation=True, max_length=256)
-            
-            # মডেল রান করা (কোনো গ্রেডিয়েন্ট ছাড়া)
             with torch.no_grad():
                 logits = self.model(**inputs).logits
             
-            # স্কোরগুলোকে প্রোবাবিলিটিতে রূপান্তর করা (Softmax)
             probs = torch.nn.functional.softmax(logits, dim=-1)[0]
-            
-            # মডেলের লেবেলগুলো খোঁজা
             label2id = {k.lower(): v for k, v in self.model.config.label2id.items()}
             
-            # মিথ্যা বা ক্ষতিকর লেবেল
-            false_keywords = ["false", "label_1", "hate", "toxic"]
+            false_keywords = ["false", "label_1", "hate", "toxic", "fake"]
             for kw in false_keywords:
                 if kw in label2id:
                     return float(probs[label2id[kw]])
             
-            # সত্য বা নিরাপদ লেবেল
-            true_keywords = ["true", "label_0", "normal", "safe"]
+            true_keywords = ["true", "label_0", "normal", "safe", "non-hate"]
             for kw in true_keywords:
                 if kw in label2id:
                     return 1.0 - float(probs[label2id[kw]])
@@ -68,12 +60,6 @@ class LocalHFModel:
         except Exception as e:
             print(f"Local Model Error: {str(e)}")
             return 0.5
-
-
-         
-           
-
-        
 
 class PyModel:
     def __init__(self, cfg):
@@ -89,7 +75,7 @@ for cfg in CONFIG["models"]:
         continue
     kind = cfg.get("type", "hf")
     if kind == "hf_api":
-        impl = HFAPIModel(cfg)
+        impl = LocalHFModel(cfg)
     else:
         impl = PyModel(cfg)
     MODELS.append((cfg["name"], float(cfg["weight"]), impl))
@@ -252,16 +238,3 @@ def export():
             "SELECT text, lang, country, final_verdict FROM claims WHERE status IN ('confirmed','overridden')"
         ).fetchall()
         return [dict(r) for r in rows]
-
-@app.get("/test-hf")
-def test_hf():
-    hf_token = os.environ.get("HF_TOKEN", "")
-    if not hf_token:
-        return {"error": "HF_TOKEN is missing in Render Environment!"}
-    
-    try:
-        client = InferenceClient(model="nusaiba19/xlmr-xfact-binary", token=hf_token, timeout=30)
-        res = client.text_classification("The sky is green.")
-        return {"status": "success", "response": res}
-    except Exception as e:
-        return {"error": str(e)}
