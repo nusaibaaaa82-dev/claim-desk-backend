@@ -23,9 +23,6 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
 
-from huggingface_hub import InferenceClient
-import os
-
 class HFAPIModel:
     def __init__(self, cfg):
         self.model_path = cfg["path"]
@@ -55,22 +52,6 @@ class HFAPIModel:
         except Exception as e:
             print(f"HF API Error: {str(e)}")
             return 0.5
-                
-            except Exception as e:
-                # এবার আসল এররটি স্পষ্ট দেখা যাবে
-                print(f"HF API Error (Attempt {attempt+1}) Type: {type(e).__name__}, Message: {str(e)}")
-                if attempt < 2:
-                    time.sleep(10)
-                else:
-                    return 0.5
-                
-            except Exception as e:
-                # এরর মেসেজটি লগে প্রিন্ট করবে
-                print(f"HF API Error (Attempt {attempt+1}): {str(e)}")
-                if attempt < 2:
-                    time.sleep(15) # ১৫ সেকেন্ড অপেক্ষা করে আবার চেষ্টা করবে
-                else:
-                    return 0.5
 
 class PyModel:
     def __init__(self, cfg):
@@ -252,20 +233,13 @@ def export():
 
 @app.get("/test-hf")
 def test_hf():
-    import requests
     hf_token = os.environ.get("HF_TOKEN", "")
     if not hf_token:
         return {"error": "HF_TOKEN is missing in Render Environment!"}
     
-    url = "https://api-inference.huggingface.co/models/nusaiba19/xlmr-xfact-binary"
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {"inputs": "The sky is green."}
-    
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        return {
-            "status_code": response.status_code,
-            "response": response.json() if response.status_code == 200 else response.text
-        }
+        client = InferenceClient(model="nusaiba19/xlmr-xfact-binary", token=hf_token, timeout=30)
+        res = client.text_classification("The sky is green.")
+        return {"status": "success", "response": res}
     except Exception as e:
         return {"error": str(e)}
