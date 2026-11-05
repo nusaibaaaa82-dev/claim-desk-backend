@@ -34,7 +34,7 @@ class HFAPIModel:
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
         
-        api_url = f"https://api-inference.huggingface.co/models/{self.model_path}"
+        api_url = f"https://router.huggingface.co/hf-inference/models/{self.model_path}"
         headers = {"Authorization": f"Bearer {self.hf_token}"}
         payload = {"inputs": input_text}
 
