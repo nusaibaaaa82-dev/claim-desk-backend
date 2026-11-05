@@ -23,45 +23,38 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
 
-import requests # উপরে import করা আছে কি না নিশ্চিত করুন
+from huggingface_hub import InferenceClient
+import os
 
 class HFAPIModel:
     def __init__(self, cfg):
         self.model_path = cfg["path"]
-        self.hf_token = os.environ.get("HF_TOKEN", "")
+        hf_token = os.environ.get("HF_TOKEN")
+        self.client = InferenceClient(model=self.model_path, token=hf_token, timeout=60)
         self.false_label = cfg.get("false_label", "false").lower()
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
-        
-        api_url = f"https://router.huggingface.co/hf-inference/models/{self.model_path}"
-        headers = {"Authorization": f"Bearer {self.hf_token}"}
-        payload = {"inputs": input_text}
-
-        for attempt in range(3):
-            try:
-                # সরাসরি requests দিয়ে কল করা হচ্ছে
-                response = requests.post(api_url, headers=headers, json=payload, timeout=60)
-                response.raise_for_status() # ৪০৪ বা ৫০৩ হলে সরাসরি এরর দেবে
-                
-                res = response.json()
-                print(f"[{self.model_path}] API Response: {res}")
-                
-                # ১. মিথ্যা বা ক্ষতিকর লেবেল খোঁজা
-                false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
-                for item in res:
-                    label = item['label'].lower()
-                    if any(kw in label for kw in false_keywords):
-                        return float(item['score'])
-                
-                # ২. সত্য বা নিরাপদ লেবেল খোঁজা
-                true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
-                for item in res:
-                    label = item['label'].lower()
-                    if any(kw in label for kw in true_keywords):
-                        return 1.0 - float(item['score'])
-                        
-                return 0.5
+        try:
+            res = self.client.text_classification(input_text)
+            print(f"[{self.model_path}] API Response: {res}")
+            
+            false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
+            for item in res:
+                label = item['label'].lower()
+                if any(kw in label for kw in false_keywords):
+                    return float(item['score'])
+            
+            true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
+            for item in res:
+                label = item['label'].lower()
+                if any(kw in label for kw in true_keywords):
+                    return 1.0 - float(item['score'])
+                    
+            return 0.5
+        except Exception as e:
+            print(f"HF API Error: {str(e)}")
+            return 0.5
                 
             except Exception as e:
                 # এবার আসল এররটি স্পষ্ট দেখা যাবে
