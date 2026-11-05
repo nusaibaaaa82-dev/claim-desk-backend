@@ -22,36 +22,54 @@ ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhos
 with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = json.load(f)
 THRESH = CONFIG.get("thresholds", {"false": 0.65, "true": 0.35})
+import requests
 
 class HFAPIModel:
     def __init__(self, cfg):
         self.model_path = cfg["path"]
-        hf_token = os.environ.get("HF_TOKEN")
-        self.client = InferenceClient(model=self.model_path, token=hf_token, timeout=60)
+        self.hf_token = os.environ.get("HF_TOKEN", "")
         self.false_label = cfg.get("false_label", "false").lower()
 
     def score(self, text: str, evidence: str = "") -> float:
         input_text = f"{text}. Context: {evidence}" if evidence else text
+        
+        # হাগিং ফেসের নতুন সঠিক লিঙ্ক
+        api_url = f"https://router.huggingface.co/hf-inference/models/{self.model_path}"
+        headers = {"Authorization": f"Bearer {self.hf_token}"}
+        payload = {"inputs": input_text}
+
         try:
-            res = self.client.text_classification(input_text)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+            
+            # যদি সার্ভার লোড না হয়, তবে এরর দেখাবে
+            if response.status_code == 503:
+                print("Model is loading, retrying...")
+                time.sleep(10)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+
+            response.raise_for_status()
+            res = response.json()
             print(f"[{self.model_path}] API Response: {res}")
             
-            false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
-            for item in res:
-                label = item['label'].lower()
-                if any(kw in label for kw in false_keywords):
-                    return float(item['score'])
-            
-            true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
-            for item in res:
-                label = item['label'].lower()
-                if any(kw in label for kw in true_keywords):
-                    return 1.0 - float(item['score'])
-                    
+            if isinstance(res, list):
+                false_keywords = ["false", "fake", "label_1", "hate", "toxic", "scam", "offensive"]
+                for item in res:
+                    label = item['label'].lower()
+                    if any(kw in label for kw in false_keywords):
+                        return float(item['score'])
+                
+                true_keywords = ["true", "real", "label_0", "normal", "safe", "non-hate"]
+                for item in res:
+                    label = item['label'].lower()
+                    if any(kw in label for kw in true_keywords):
+                        return 1.0 - float(item['score'])
+                        
             return 0.5
         except Exception as e:
             print(f"HF API Error: {str(e)}")
             return 0.5
+
+        
 
 class PyModel:
     def __init__(self, cfg):
